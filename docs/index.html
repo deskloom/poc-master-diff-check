@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>月次マスタ差分チェック POC</title>
+<style>
+  :root { --bg:#f4f6f8; --card:#fff; --ink:#1f2937; --muted:#6b7280; --line:#e5e7eb; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: "Hiragino Kaku Gothic ProN","Noto Sans JP",sans-serif; background:var(--bg); color:var(--ink); word-break: normal; }
+  header { background:#1e3a5f; color:#fff; padding:20px 16px; }
+  header h1 { margin:0 0 8px; font-size:22px; }
+  header p { margin:0; font-size:14px; line-height:1.7; }
+  main { max-width:960px; margin:0 auto; padding:16px; }
+  .cards { display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; margin:16px 0; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; text-align:center; }
+  .card .n { font-size:28px; font-weight:700; }
+  .card .l { font-size:13px; color:var(--muted); }
+  .filters { display:flex; flex-wrap:wrap; gap:8px; margin:8px 0 12px; }
+  .filters button { border:1px solid #cbd5e1; background:#fff; border-radius:999px; padding:8px 14px; font-size:14px; cursor:pointer; }
+  .filters button[aria-pressed="true"] { background:#1e3a5f; color:#fff; border-color:#1e3a5f; }
+  .note { background:#fff; border:1px solid var(--line); border-radius:10px; padding:12px 14px; font-size:13px; line-height:1.8; color:#374151; }
+  .table-wrap { overflow-x:auto; background:#fff; border:1px solid var(--line); border-radius:10px; margin-top:12px; }
+  table { border-collapse:collapse; width:100%; min-width:640px; font-size:14px; }
+  th, td { border-bottom:1px solid var(--line); padding:10px 12px; text-align:left; vertical-align:top; }
+  th { background:#f8fafc; font-size:13px; color:#475569; white-space:nowrap; }
+  .badge { display:inline-block; border-radius:999px; padding:2px 10px; font-size:12px; white-space:nowrap; }
+  .b-added { background:#dcfce7; color:#166534; }
+  .b-changed { background:#fef3c7; color:#92400e; }
+  .b-removed { background:#fee2e2; color:#991b1b; }
+  .b-unchanged { background:#e2e8f0; color:#334155; }
+  .diff { color:#92400e; font-size:13px; }
+  footer { max-width:960px; margin:0 auto; padding:0 16px 32px; font-size:12px; color:var(--muted); line-height:1.8; }
+  @media (max-width:600px) {
+    header h1 { font-size:18px; }
+    .cards { grid-template-columns: repeat(2, 1fr); }
+    .table-wrap { overflow-x:visible; }
+    table { min-width:0; width:100%; table-layout:fixed; font-size:13px; }
+    thead { display:none; }
+    table, tbody, tr, td { display:block; width:100%; }
+    tbody tr { border-bottom:2px solid var(--line); padding:10px 12px; }
+    td { border:none; padding:3px 0; overflow-wrap:break-word; word-break:normal; line-break:strict; }
+    td[data-label]::before { content:attr(data-label) "："; font-size:12px; color:var(--muted); }
+    td.cell-status::before { content:none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>月次マスタ差分チェック</h1>
+  <p>架空の施設名簿（前月10件・今月10件）を突き合わせ、新規・変更・削除・継続に分けて表示します。毎月の更新作業で「どれだけ手直しが必要か」をひと目で確認するための試作です。データはすべて架空です。</p>
+</header>
+<main>
+  <div class="cards" id="summary">
+    <div class="card"><div class="n" id="c-added">2</div><div class="l">新規</div></div>
+    <div class="card"><div class="n" id="c-changed">3</div><div class="l">変更</div></div>
+    <div class="card"><div class="n" id="c-removed">2</div><div class="l">削除</div></div>
+    <div class="card"><div class="n" id="c-unchanged">5</div><div class="l">継続</div></div>
+  </div>
+
+  <div class="filters" role="group" aria-label="表示の絞り込み">
+    <button type="button" data-f="all" aria-pressed="true">すべて（12件）</button>
+    <button type="button" data-f="added" aria-pressed="false">新規</button>
+    <button type="button" data-f="changed" aria-pressed="false">変更</button>
+    <button type="button" data-f="removed" aria-pressed="false">削除</button>
+    <button type="button" data-f="unchanged" aria-pressed="false">継続</button>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>区分</th><th>施設コード</th><th>施設名</th><th>変更内容</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <p class="note">判定ルール：施設コードが一致する行同士で施設名・住所・電話・病床数を比べます。今月だけにある行は新規、前月だけにある行は削除、1項目でも違えば変更、すべて同じなら継続です。前後の空白だけの違いは変更に数えません。</p>
+</main>
+<footer>掲載データはすべて架空の試作データです。外部サービスへの送信は行いません。</footer>
+
+<script>
+var PREVIOUS = [
+  {"id":"F-1001","name":"あおぞら診療所","address":"北区花見1-2-3","tel":"011-111-1001","beds":"0"},
+  {"id":"F-1002","name":"みどり台医院","address":"東区森本2-4-1","tel":"011-111-1002","beds":"19"},
+  {"id":"F-1003","name":"さくら総合医院","address":"中央区本町3-1-5","tel":"011-111-1003","beds":"120"},
+  {"id":"F-1004","name":"北風内科","address":"西区琴似4-2-2","tel":"011-111-1004","beds":"0"},
+  {"id":"F-1005","name":"ひまわり小児科","address":"南区真駒内5-6-7","tel":"011-111-1005","beds":"0"},
+  {"id":"F-1006","name":"しらかば整形外科","address":"北区新川6-3-1","tel":"011-111-1006","beds":"45"},
+  {"id":"F-1007","name":"おおはし眼科","address":"東区北丘8-1-9","tel":"011-111-1007","beds":"0"},
+  {"id":"F-1008","name":"もみじ歯科医院","address":"中央区南丸山9-2-4","tel":"011-111-1008","beds":"0"},
+  {"id":"F-1009","name":"つばめ産婦人科","address":"西区発寒10-5-6","tel":"011-111-1009","beds":"30"},
+  {"id":"F-1010","name":"かもめ耳鼻科","address":"南区澄川11-1-2","tel":"011-111-1010","beds":"0"}
+];
+var CURRENT = [
+  {"id":"F-1001","name":"あおぞら診療所","address":"北区花見1-2-3","tel":"011-111-1001","beds":"0"},
+  {"id":"F-1002","name":"みどり台医院","address":"東区森本2-4-8","tel":"011-111-1002","beds":"19"},
+  {"id":"F-1003","name":"さくら総合医院","address":"中央区本町3-1-5","tel":"011-111-1003","beds":"150"},
+  {"id":"F-1004","name":"北風内科","address":"西区琴似4-2-2","tel":"011-111-1004","beds":"0"},
+  {"id":"F-1005","name":"ひまわり小児科","address":"南区真駒内5-6-7","tel":"011-111-1005","beds":"0"},
+  {"id":"F-1006","name":"しらかば整形外科","address":"北区新川6-3-1","tel":"011-111-1999","beds":"45"},
+  {"id":"F-1007","name":"おおはし眼科","address":"東区北丘8-1-9","tel":"011-111-1007","beds":"0"},
+  {"id":"F-1008","name":"もみじ歯科医院","address":"中央区南丸山9-2-4","tel":"011-111-1008","beds":"0"},
+  {"id":"F-1011","name":"はやぶさ心療内科","address":"中央区駅前12-3-3","tel":"011-111-1011","beds":"0"},
+  {"id":"F-1012","name":"わかばリハビリ科","address":"東区光星13-7-1","tel":"011-111-1012","beds":"60"}
+];
+var FIELD_LABEL = { name:"施設名", address:"住所", tel:"電話", beds:"病床数" };
+
+function norm(r){
+  return {
+    id: String(r.id).trim(),
+    name: String(r.name).trim(),
+    address: String(r.address).trim(),
+    tel: String(r.tel).trim(),
+    beds: String(r.beds).trim()
+  };
+}
+function buildRows(){
+  var prev = {};
+  PREVIOUS.forEach(function(r){ var n = norm(r); prev[n.id] = n; });
+  var cur = {};
+  CURRENT.forEach(function(r){ var n = norm(r); cur[n.id] = n; });
+  var ids = {};
+  Object.keys(prev).forEach(function(k){ ids[k] = 1; });
+  Object.keys(cur).forEach(function(k){ ids[k] = 1; });
+  var list = Object.keys(ids).sort().map(function(id){
+    var p = prev[id] || null, c = cur[id] || null, status, diffs = [];
+    if (p && !c) { status = "removed"; }
+    else if (!p && c) { status = "added"; }
+    else {
+      ["name","address","tel","beds"].forEach(function(f){ if (p[f] !== c[f]) diffs.push(f); });
+      status = diffs.length ? "changed" : "unchanged";
+    }
+    return { id:id, prev:p, cur:c, status:status, diffs:diffs };
+  });
+  return list;
+}
+var STATUS_LABEL = { added:"新規", changed:"変更", removed:"削除", unchanged:"継続" };
+var ALL_ROWS = buildRows();
+
+function detailText(row){
+  if (row.status === "added") return "今月から掲載（" + row.cur.address + "）";
+  if (row.status === "removed") return "今月は掲載なし（前月：" + row.prev.address + "）";
+  if (row.status === "unchanged") return "変更なし";
+  return row.diffs.map(function(f){
+    return FIELD_LABEL[f] + "：" + row.prev[f] + " → " + row.cur[f];
+  }).join(" ／ ");
+}
+function nameOf(row){ return (row.cur || row.prev).name; }
+
+function render(filter){
+  var body = document.getElementById("rows");
+  body.innerHTML = "";
+  ALL_ROWS.filter(function(r){ return filter === "all" || r.status === filter; }).forEach(function(row){
+    var tr = document.createElement("tr");
+    var badge = document.createElement("span");
+    badge.className = "badge b-" + row.status;
+    badge.textContent = STATUS_LABEL[row.status];
+    var td0 = document.createElement("td"); td0.className = "cell-status"; td0.appendChild(badge);
+    var td1 = document.createElement("td"); td1.setAttribute("data-label", "施設コード"); td1.textContent = row.id;
+    var td2 = document.createElement("td"); td2.setAttribute("data-label", "施設名"); td2.textContent = nameOf(row);
+    var td3 = document.createElement("td"); td3.setAttribute("data-label", "変更内容"); td3.textContent = detailText(row);
+    if (row.status === "changed") td3.className = "diff";
+    tr.appendChild(td0); tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3);
+    body.appendChild(tr);
+  });
+  var buttons = document.querySelectorAll(".filters button");
+  buttons.forEach(function(b){ b.setAttribute("aria-pressed", b.getAttribute("data-f") === filter ? "true" : "false"); });
+}
+document.querySelectorAll(".filters button").forEach(function(b){
+  b.addEventListener("click", function(){ render(b.getAttribute("data-f")); });
+});
+render("all");
+</script>
+</body>
+</html>
